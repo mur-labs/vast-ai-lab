@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import secrets
+import subprocess
 import threading
 import time
 import urllib.request
@@ -284,6 +285,38 @@ class InstanceManager:
             bid_price = None
             logger.info("Launching on-demand instance at $%.4f/hr", float(best_offer.get("dph_total") or 0.20))
 
+        onstart_cmd = (
+            "mkdir -p /models\n"
+            "if [ ! -s /models/model.gguf ]; then\n"
+            "    if command -v aria2c >/dev/null 2>&1; then\n"
+            "        aria2c -x 16 -s 16 -k 1M --continue=true --dir=/models --out=model.gguf \"${MODEL_URL}\" || curl -fSL --retry 3 -o /models/model.gguf \"${MODEL_URL}\"\n"
+            "    else\n"
+            "        curl -fSL --retry 3 -o /models/model.gguf \"${MODEL_URL}\"\n"
+            "    fi\n"
+            "fi\n"
+            "cat << 'EOF' > /models/qwen2.5-14b-instruct.yaml\n"
+            "name: qwen2.5-14b-instruct\n"
+            "backend: llama-cpp\n"
+            "parameters:\n"
+            "  model: /models/model.gguf\n"
+            "  context_size: 32768\n"
+            "  gpu_layers: 99\n"
+            "  threads: 8\n"
+            "  f16: true\n"
+            "  mmap: true\n"
+            "EOF\n"
+            "export LOCALAI_API_KEY=\"${API_TOKEN}\"\n"
+            "export ADDRESS=\"0.0.0.0:${PORT:-8080}\"\n"
+            "if command -v local-ai >/dev/null 2>&1; then\n"
+            "    local-ai backends install llama-cpp || true\n"
+            "    nohup local-ai run --models-path /models --address \"0.0.0.0:${PORT:-8080}\" > /var/log/localai.log 2>&1 &\n"
+            "elif [ -x /app/entrypoint.sh ]; then\n"
+            "    nohup /app/entrypoint.sh > /var/log/server.log 2>&1 &\n"
+            "elif command -v llama-server >/dev/null 2>&1; then\n"
+            "    nohup llama-server --model /models/model.gguf --api-key \"${API_TOKEN}\" --host 0.0.0.0 --port \"${PORT:-8080}\" -ngl 99 -c 32768 > /var/log/server.log 2>&1 &\n"
+            "fi\n"
+        )
+
         instance_id = self.client.launch_instance(
             offer_id=offer_id,
             image=self.config.docker_image,
@@ -291,6 +324,8 @@ class InstanceManager:
             env=env_vars,
             container_port=self.config.container_port,
             bid_price=bid_price,
+            onstart=onstart_cmd,
+            runtype="ssh"
         )
 
         with self._lock:
@@ -322,9 +357,9 @@ class InstanceManager:
                 raw_intended = inst.get("intended_status")
                 intended_status = str(raw_intended).lower() if isinstance(raw_intended, str) else ""
 
-                if "outbid" in status_msg or status == "outbid":
+                if "outbid" in status_msg or status == "outbid" or (intended_status == "stopped" and time.time() - start_poll > 15):
                     raise VastClientError(
-                        f"Instance {instance_id} was outbid on the marketplace ({raw_msg or status})."
+                        f"Instance {instance_id} was outbid or stopped on the marketplace (status: {raw_status}, intended: {raw_intended}, msg: {raw_msg})."
                     )
 
                 if status == "unloaded" or (intended_status == "stopped" and status in ("stopped", "offline") and time.time() - start_poll > 30):
@@ -342,6 +377,30 @@ class InstanceManager:
                 else:
                     stopped_since = None
 
+            # 1. Resolve SSH endpoint for secure tunneling
+            ssh_endpoint = self.client.resolve_ssh_endpoint(
+                instance_id=instance_id,
+                instance_data=inst
+            )
+            if isinstance(ssh_endpoint, (tuple, list)) and len(ssh_endpoint) == 2:
+                ssh_host, ssh_port = ssh_endpoint
+                try:
+                    tunnel_script = Path(__file__).resolve().parent.parent / "deploy" / "ssh_tunnel.sh"
+                    if tunnel_script.exists():
+                        subprocess.run(
+                            [str(tunnel_script), "start", str(ssh_host), str(ssh_port), str(self.config.listen_port), os.path.expanduser("~/.ssh/id_rsa")],
+                            check=False,
+                            capture_output=True,
+                            timeout=10
+                        )
+                except Exception as tunnel_err:
+                    logger.debug("SSH tunnel auto-start attempted: %s", tunnel_err)
+
+                if self._check_health("127.0.0.1", self.config.listen_port, token) is True:
+                    logger.info("Inference endpoint is live and verified healthy via SSH tunnel on 127.0.0.1:%s!", self.config.listen_port)
+                    return ("127.0.0.1", self.config.listen_port), token
+
+            # 2. Check direct dynamic port mapping
             endpoint = self.client.resolve_dynamic_endpoint(
                 instance_id=instance_id,
                 container_port=self.config.container_port,
@@ -387,15 +446,18 @@ class InstanceManager:
             "AUTH_FAILED": if token failed authentication (HTTP 401)
             False: if server is still loading or not reachable
         """
-        # 1. Check basic server liveness
-        health_url = f"http://{host_ip}:{host_port}/health"
-        req = urllib.request.Request(health_url, method="GET")
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                if resp.status not in (200, 204):
-                    return False
-        except Exception:
-            return False
+        # 1. Check basic server liveness (/health or LocalAI /readyz)
+        live = False
+        for path in ("/health", "/readyz"):
+            health_url = f"http://{host_ip}:{host_port}{path}"
+            req = urllib.request.Request(health_url, method="GET")
+            try:
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status in (200, 204):
+                        live = True
+                        break
+            except Exception:
+                pass
 
         # 2. Verify token authentication on /v1/models
         models_url = f"http://{host_ip}:{host_port}/v1/models"
@@ -438,6 +500,14 @@ class InstanceManager:
                     _clear_persisted_state()
                 except Exception as e:
                     logger.error("Error destroying instance %s: %s", inst_to_manage, e)
+
+        # Clean up any active SSH tunnel
+        try:
+            tunnel_script = Path(__file__).resolve().parent.parent / "deploy" / "ssh_tunnel.sh"
+            if tunnel_script.exists():
+                subprocess.run([str(tunnel_script), "stop"], check=False, capture_output=True, timeout=5)
+        except Exception:
+            pass
 
         with self._state_condition:
             self.state = InstanceState.STOPPED

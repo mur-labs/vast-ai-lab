@@ -13,3 +13,5 @@ build/
 .venv/
 env/
 venv/
+*results*.json
+*benchmark*.json

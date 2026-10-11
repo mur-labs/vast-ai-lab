@@ -1,0 +1,21 @@
+name: qwen2.5-14b-instruct
+backend: llama-cpp
+parameters:
+  model: /models/qwen2.5-14b-instruct-q4_k_m.gguf
+  context_size: 32768
+  gpu_layers: 99
+  threads: 8
+  f16: true
+  mmap: true
+  batch: 512
+
+# ChatML template for Qwen2.5 Instruct
+template:
+  chat_message: |
+    <|im_start|>{{.Role}}
+    {{.Content}}<|im_end|>
+  chat: |
+    {{.Input}}
+    <|im_start|>assistant
+  completion: |
+    {{.Input}}

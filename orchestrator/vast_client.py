@@ -123,7 +123,8 @@ class VastClient:
         env: Dict[str, str],
         container_port: int = 8000,
         bid_price: Optional[float] = None,
-        onstart: Optional[str] = None
+        onstart: Optional[str] = None,
+        runtype: str = "ssh"
     ) -> int:
         """
         Rent an offer and start a container. Returns the new instance ID.
@@ -137,7 +138,7 @@ class VastClient:
             "image": image,
             "disk": float(disk_gb),
             "env": env_copy,
-            "runtype": "args",
+            "runtype": runtype,
         }
         if bid_price is not None:
             payload["price"] = float(bid_price)
@@ -205,6 +206,21 @@ class VastClient:
             if host_port:
                 return str(host_ip), int(host_port)
 
+        return None
+
+    def resolve_ssh_endpoint(
+        self,
+        instance_id: int,
+        instance_data: Optional[Dict[str, Any]] = None
+    ) -> Optional[Tuple[str, int]]:
+        """Extract SSH host and port from Vast.ai instance metadata."""
+        inst = instance_data or self.get_instance(instance_id)
+        if not inst or not isinstance(inst, dict):
+            return None
+        ssh_host = inst.get("ssh_host") or inst.get("public_ipaddr")
+        ssh_port = inst.get("ssh_port")
+        if ssh_host and ssh_port:
+            return str(ssh_host), int(ssh_port)
         return None
 
     def start_instance(self, instance_id: int) -> bool:

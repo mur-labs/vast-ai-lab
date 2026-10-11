@@ -27,3 +27,9 @@ Build a personal, on-demand AI inference infrastructure for academic research us
 *   **Phase 3 — Image Delivery & End-to-End Integration:** [COMPLETE]
     *   GitHub Actions cloud build pipeline configured in `.github/workflows/docker-build-push.yml` for automated GHCR image delivery without local Docker.
     *   LiteLLM route `vast-qwen` added to `/home/carol/ai-router/config.yaml` pointing to Orchestrator proxy (`http://127.0.0.1:8088/v1`).
+*   **Phase 4 — LocalAI Evaluation, Academic Benchmarks & Unified Startup:** [COMPLETE]
+    *   `deploy/model_config.yaml` & `deploy/remote_bootstrap.sh`: Declarative configurations and remote-first direct downloader (`aria2c`) supporting LocalAI and llama-server.
+    *   `deploy/ssh_tunnel.sh`: Automated SSH local port forwarding (`127.0.0.1:8088 -> remote:8080`) for private zero-trust access.
+    *   `tests/benchmark_academic.py`: 5 academic workloads tested against live RTX 3090 GPU (100% pass rate; ~455-874 prompt t/s, ~42-76 generation t/s).
+    *   `~/ai-router/start-ai-router.sh`: Integrated single-command startup for LiteLLM, Router, Dashboard, and Vast Orchestrator.
+    *   Full test suite in `tests/` passes (19 tests).
