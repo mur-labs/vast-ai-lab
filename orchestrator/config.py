@@ -22,9 +22,11 @@ class HostCriteria:
 class ModelConfig:
     """Configuration for inference models."""
     name: str = "qwen2.5-14b-instruct"
-    model_url: str = (
-        "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF/resolve/main/"
-        "qwen2.5-14b-instruct-q4_k_m.gguf"
+    model_url: str = field(
+        default_factory=lambda: os.getenv(
+            "MODEL_URL",
+            "https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf"
+        )
     )
     context_size: int = 4096
     gpu_layers: int = 99
