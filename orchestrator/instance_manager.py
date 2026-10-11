@@ -161,10 +161,14 @@ class InstanceManager:
             env_vars["HF_TOKEN"] = self.config.active_model.hf_token
 
         logger.info("Launching container image %s on offer %s...", self.config.docker_image, offer_id)
-        min_bid = float(best_offer.get("min_bid") or best_offer.get("dph_total") or 0.15)
-        # Apply competitive bid buffer to secure spot instances against immediate outbidding
-        bid_price = round(min_bid * (1.0 + self.config.host_criteria.bid_buffer_ratio), 4)
-        logger.info("Bidding $%.4f/hr on spot instance (min_bid: $%.4f/hr)", bid_price, min_bid)
+        if self.config.host_criteria.spot_instances:
+            min_bid = float(best_offer.get("min_bid") or best_offer.get("dph_total") or 0.15)
+            # Apply competitive bid buffer to secure spot instances against immediate outbidding
+            bid_price = round(min_bid * (1.0 + self.config.host_criteria.bid_buffer_ratio), 4)
+            logger.info("Bidding $%.4f/hr on spot instance (min_bid: $%.4f/hr)", bid_price, min_bid)
+        else:
+            bid_price = None
+            logger.info("Launching on-demand instance at $%.4f/hr", float(best_offer.get("dph_total") or 0.20))
 
         instance_id = self.client.launch_instance(
             offer_id=offer_id,
@@ -181,18 +185,42 @@ class InstanceManager:
         # Poll until instance is running, port resolved, and server responds
         start_poll = time.time()
         last_progress_log = time.time()
+        stopped_since: Optional[float] = None
         logger.info("Awaiting container boot and dynamic port mapping for instance %s...", instance_id)
 
         while time.time() - start_poll < timeout:
-            # Check for terminal status (e.g. outbid by another user)
+            # Check for terminal status from Vast API
             inst = self.client.get_instance(instance_id)
-            if inst:
-                status = inst.get("actual_status") or inst.get("cur_state")
-                if status in ("stopped", "offline", "exited", "outbid"):
+            if inst and isinstance(inst, dict):
+                raw_status = inst.get("actual_status") or inst.get("cur_state")
+                status = str(raw_status).lower() if isinstance(raw_status, str) else ""
+                raw_msg = inst.get("status_msg")
+                status_msg = str(raw_msg).lower() if isinstance(raw_msg, str) else ""
+                raw_intended = inst.get("intended_status")
+                intended_status = str(raw_intended).lower() if isinstance(raw_intended, str) else ""
+
+                # 1. Definite outbid preemption
+                if "outbid" in status_msg or status == "outbid":
                     raise VastClientError(
-                        f"Instance {instance_id} was preempted/stopped (status: {status}). "
-                        f"Outbid by another user on the marketplace."
+                        f"Instance {instance_id} was outbid on the marketplace ({raw_msg or status})."
                     )
+
+                # 2. Host unloaded or explicitly terminated
+                if status == "unloaded" or (intended_status == "stopped" and time.time() - start_poll > 30):
+                    raise VastClientError(
+                        f"Instance {instance_id} was terminated or unloaded by host ({raw_msg or status})."
+                    )
+
+                # 3. Track prolonged stopped / offline state (normal transient boot states, fatal only if stuck > 60s)
+                if status in ("stopped", "offline"):
+                    if stopped_since is None:
+                        stopped_since = time.time()
+                    elif time.time() - stopped_since > 60 and time.time() - start_poll > 60:
+                        raise VastClientError(
+                            f"Instance {instance_id} failed to boot (stuck in {status} for >60s, msg: {raw_msg})."
+                        )
+                else:
+                    stopped_since = None
 
             endpoint = self.client.resolve_dynamic_endpoint(
                 instance_id=instance_id,

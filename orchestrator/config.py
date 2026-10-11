@@ -10,8 +10,12 @@ class HostCriteria:
     min_disk_gb: float = 40.0
     min_inet_down_mbps: float = 500.0
     min_reliability: float = 0.97
-    spot_instances: bool = True
-    bid_buffer_ratio: float = 0.10  # 10% bid buffer above min_bid to prevent preemption
+    spot_instances: bool = field(
+        default_factory=lambda: os.getenv("VAST_SPOT_INSTANCES", "true").lower() in ("true", "1", "yes")
+    )
+    bid_buffer_ratio: float = field(
+        default_factory=lambda: float(os.getenv("VAST_BID_BUFFER", "0.20"))
+    )  # 20% bid buffer above min_bid to prevent preemption
 
 
 @dataclass

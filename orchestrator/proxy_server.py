@@ -69,34 +69,49 @@ class ProxyHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
 
         try:
             self.manager.touch()
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=600) as resp:
                 self.send_response(resp.status)
                 for key, val in resp.getheaders():
-                    if key.lower() not in ("transfer-encoding", "content-length"):
+                    if key.lower() not in ("transfer-encoding", "connection", "keep-alive"):
                         self.send_header(key, val)
-                
-                # Stream response bytes
-                data = resp.read()
-                self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
-                self.wfile.write(data)
+
+                # Stream response bytes progressively (crucial for SSE tokens and large outputs)
+                try:
+                    while True:
+                        chunk = resp.read(4096)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    logger.debug("Client disconnected while reading response stream")
                 self.manager.touch()
         except urllib.error.HTTPError as e:
-            err_data = e.read()
-            self.send_response(e.code)
-            for key, val in e.headers.items():
-                if key.lower() not in ("transfer-encoding", "content-length"):
-                    self.send_header(key, val)
-            self.send_header("Content-Length", str(len(err_data)))
-            self.end_headers()
-            self.wfile.write(err_data)
+            try:
+                err_data = e.read()
+                self.send_response(e.code)
+                for key, val in e.headers.items():
+                    if key.lower() not in ("transfer-encoding", "connection", "keep-alive"):
+                        self.send_header(key, val)
+                self.send_header("Content-Length", str(len(err_data)))
+                self.end_headers()
+                self.wfile.write(err_data)
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        except (BrokenPipeError, ConnectionResetError):
+            logger.debug("Client disconnected before response could be sent")
         except Exception as e:
             logger.error("Error proxying request to %s: %s", target_url, e)
-            self.send_response(502)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            err_payload = f'{{"error": {{"message": "Proxy communication error: {str(e)}", "type": "bad_gateway"}}}}'
-            self.wfile.write(err_payload.encode("utf-8"))
+            try:
+                self.send_response(502)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                err_payload = f'{{"error": {{"message": "Proxy communication error: {str(e)}", "type": "bad_gateway"}}}}'
+                self.wfile.write(err_payload.encode("utf-8"))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def do_GET(self):
         self._handle_forward()
