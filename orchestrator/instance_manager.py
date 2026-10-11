@@ -180,6 +180,7 @@ class InstanceManager:
 
         # Poll until instance is running, port resolved, and server responds
         start_poll = time.time()
+        last_progress_log = time.time()
         logger.info("Awaiting container boot and dynamic port mapping for instance %s...", instance_id)
 
         while time.time() - start_poll < timeout:
@@ -199,10 +200,28 @@ class InstanceManager:
             )
             if endpoint:
                 host_ip, host_port = endpoint
-                logger.info("Dynamic port resolved: %s:%s. Verifying health...", host_ip, host_port)
                 if self._check_health(host_ip, host_port, ephemeral_token):
                     logger.info("Inference endpoint is live and verified healthy!")
                     return (host_ip, host_port), ephemeral_token
+
+                if time.time() - last_progress_log >= 15:
+                    elapsed = int(time.time() - start_poll)
+                    logger.info(
+                        "Dynamic port is %s:%s. Container initializing (downloading weights / loading model, elapsed: %ds)...",
+                        host_ip,
+                        host_port,
+                        elapsed
+                    )
+                    last_progress_log = time.time()
+            else:
+                if time.time() - last_progress_log >= 15:
+                    elapsed = int(time.time() - start_poll)
+                    logger.info(
+                        "Instance %s is starting up on Vast host (elapsed: %ds)...",
+                        instance_id,
+                        elapsed
+                    )
+                    last_progress_log = time.time()
 
             time.sleep(self.config.poll_interval_seconds)
 

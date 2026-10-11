@@ -30,7 +30,11 @@ class ProxyHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(f'{{"status": "{state.value}"}}'.encode("utf-8"))
             return
 
-        # 2. Lazy provisioning / readiness check
+        # 2. Read incoming request body immediately to drain client socket
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length > 0 else None
+
+        # 3. Lazy provisioning / readiness check
         try:
             endpoint, api_token = self.manager.ensure_ready()
         except Exception as e:
@@ -41,10 +45,6 @@ class ProxyHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             err_payload = f'{{"error": {{"message": "Failed to provision GPU instance: {str(e)}", "type": "orchestrator_error"}}}}'
             self.wfile.write(err_payload.encode("utf-8"))
             return
-
-        # 3. Read incoming request body
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length) if content_length > 0 else None
 
         # 4. Construct remote URL
         host_ip, host_port = endpoint
