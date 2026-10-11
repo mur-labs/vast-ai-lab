@@ -44,5 +44,6 @@ class OrchestratorConfig:
     container_port: int = 8000
     docker_image: str = os.getenv("RENTAL_DOCKER_IMAGE", "ghcr.io/mur-labs/rental-llm:latest")
     vast_api_key: Optional[str] = field(default_factory=lambda: os.getenv("VAST_API_KEY"))
+    idle_action: str = field(default_factory=lambda: os.getenv("VAST_IDLE_ACTION", "stop"))  # "stop" to preserve weights, "destroy" to delete contract
     host_criteria: HostCriteria = field(default_factory=HostCriteria)
     active_model: ModelConfig = field(default_factory=ModelConfig)

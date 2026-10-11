@@ -64,12 +64,13 @@ class TestInstanceManager(unittest.TestCase):
 
     def test_idle_reaper_auto_destroys(self):
         """
-        Verify that instance is cleanly destroyed after exceeding idle timeout.
+        Verify that instance is cleanly destroyed after exceeding idle timeout when idle_action='destroy'.
         """
         config = OrchestratorConfig(
             idle_timeout_seconds=0.1,  # 100ms idle timeout
             poll_interval_seconds=0.01,
             boot_timeout_seconds=1,
+            idle_action="destroy",
         )
         manager = InstanceManager(config, vast_client=self.mock_client)
         manager._check_health = MagicMock(return_value=True)
@@ -77,10 +78,7 @@ class TestInstanceManager(unittest.TestCase):
         endpoint, token = manager.ensure_ready()
         self.assertEqual(manager.get_state(), InstanceState.READY)
 
-        # Wait for the idle reaper to trigger destruction
-        # Reaper loop checks every 10 seconds normally, but let's test destroy invocation directly or run reaper loop
         time.sleep(0.2)
-        # Call reaper check logic
         idle_duration = time.time() - manager.last_active_time
         self.assertGreaterEqual(idle_duration, config.idle_timeout_seconds)
 
@@ -89,6 +87,43 @@ class TestInstanceManager(unittest.TestCase):
 
         self.assertEqual(manager.get_state(), InstanceState.STOPPED)
         self.mock_client.destroy_instance.assert_called_with(88888)
+
+    def test_reusing_existing_stopped_instance(self):
+        """
+        Verify that an existing stopped instance is started and reused without renting a new offer.
+        """
+        config = OrchestratorConfig(
+            poll_interval_seconds=0.01,
+            boot_timeout_seconds=1,
+            docker_image="ghcr.io/mur-labs/rental-llm:latest",
+        )
+        self.mock_client.list_instances.return_value = [
+            {
+                "id": 554433,
+                "image": "ghcr.io/mur-labs/rental-llm:latest",
+                "actual_status": "stopped",
+                "status_msg": "stopped",
+            }
+        ]
+        self.mock_client.start_instance.return_value = True
+        self.mock_client.get_instance.return_value = {
+            "id": 554433,
+            "actual_status": "running",
+            "ports": {"8000/tcp": [{"HostPort": "12345"}]},
+            "public_ipaddr": "127.0.0.1",
+        }
+        self.mock_client.resolve_dynamic_endpoint.return_value = ("127.0.0.1", 12345)
+
+        manager = InstanceManager(config, vast_client=self.mock_client)
+        manager._check_health = MagicMock(return_value=True)
+
+        endpoint, token = manager.ensure_ready()
+        manager.stop_reaper()
+
+        # Should start existing instance, NOT launch a new one
+        self.mock_client.start_instance.assert_called_with(554433)
+        self.assertEqual(self.mock_client.launch_instance.call_count, 0)
+        self.assertEqual(endpoint, ("127.0.0.1", 12345))
 
     def test_transient_offline_does_not_abort(self):
         """

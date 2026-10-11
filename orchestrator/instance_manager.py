@@ -1,15 +1,46 @@
 import enum
+import json
 import logging
 import secrets
 import threading
 import time
 import urllib.request
-from typing import Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
 from .config import OrchestratorConfig
 from .vast_client import VastClient, VastClientError
 
 logger = logging.getLogger("orchestrator.instance_manager")
+
+STATE_FILE = Path.home() / ".vast_rental_llm_state.json"
+
+
+def _load_persisted_state() -> Dict[str, Any]:
+    try:
+        if STATE_FILE.is_file():
+            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_persisted_state(instance_id: int, api_token: str):
+    try:
+        STATE_FILE.write_text(
+            json.dumps({"instance_id": instance_id, "api_token": api_token}),
+            encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def _clear_persisted_state():
+    try:
+        if STATE_FILE.is_file():
+            STATE_FILE.unlink()
+    except Exception:
+        pass
 
 
 class InstanceState(str, enum.Enum):
@@ -129,21 +160,81 @@ class InstanceManager:
             raise
 
     def _provision_instance(self, timeout: float) -> Tuple[Tuple[str, int], str]:
-        """Execute offer search, launch, polling, and port resolution."""
-        # Safeguard: Clean up any lingering active instances from aborted sessions
+        """
+        Detects any already installed/running instance to reuse it without downloading
+        weights again, or launches a new cost-optimal instance from Vast marketplace.
+        """
+        persisted = _load_persisted_state()
+        saved_id = persisted.get("instance_id")
+        saved_token = persisted.get("api_token")
+
+        # 1. Check if an instance with our image or saved ID already exists on account
+        reusable_inst = None
         try:
             for inst in self.client.list_instances():
-                status = inst.get("actual_status") or inst.get("cur_state")
-                if status in ("running", "loading", "created", "scheduling", "pending"):
-                    logger.warning(
-                        "Found lingering instance ID %s (status: %s). Cleaning up to prevent duplicate billing.",
-                        inst.get("id"),
-                        status
-                    )
-                    self.client.destroy_instance(inst.get("id"))
-        except Exception as check_err:
-            logger.debug("Existing instances pre-check: %s", check_err)
+                inst_id = inst.get("id")
+                img = str(inst.get("image", "")).lower()
+                raw_status = inst.get("actual_status") or inst.get("cur_state")
+                status = str(raw_status).lower() if isinstance(raw_status, str) else ""
+                raw_msg = inst.get("status_msg")
+                status_msg = str(raw_msg).lower() if isinstance(raw_msg, str) else ""
 
+                # Match by image name or saved instance ID, ensuring not permanently outbid
+                is_our_image = ("rental-llm" in img) or (self.config.docker_image.lower() in img)
+                is_saved = (saved_id is not None and inst_id == saved_id)
+
+                if (is_our_image or is_saved) and "outbid" not in status_msg and status != "outbid":
+                    reusable_inst = inst
+                    break
+        except Exception as check_err:
+            logger.debug("Failed listing instances during reuse check: %s", check_err)
+
+        if reusable_inst:
+            inst_id = int(reusable_inst["id"])
+            raw_status = reusable_inst.get("actual_status") or reusable_inst.get("cur_state")
+            status = str(raw_status).lower() if isinstance(raw_status, str) else ""
+            logger.info("Found existing instance ID %s on Vast.ai (status: %s).", inst_id, status)
+
+            token = saved_token or secrets.token_urlsafe(32)
+
+            # If stopped or exited, start it up to preserve downloaded weights
+            if status in ("stopped", "exited", "offline"):
+                logger.info("Starting stopped instance %s to reuse existing downloaded weights...", inst_id)
+                self.client.start_instance(inst_id)
+
+            with self._lock:
+                self.instance_id = inst_id
+
+            try:
+                endpoint, token = self._await_instance_ready(inst_id, token, timeout)
+                _save_persisted_state(inst_id, token)
+                logger.info("Successfully reused existing instance %s! Model download skipped.", inst_id)
+                return endpoint, token
+            except Exception as reuse_err:
+                logger.warning(
+                    "Failed to reactivate existing instance %s (%s). Falling back to marketplace...",
+                    inst_id,
+                    reuse_err
+                )
+                try:
+                    self.client.destroy_instance(inst_id)
+                except Exception:
+                    pass
+                _clear_persisted_state()
+                with self._lock:
+                    self.instance_id = None
+
+        # 2. Clean up any unknown lingering active instances
+        try:
+            for inst in self.client.list_instances():
+                raw_st = inst.get("actual_status") or inst.get("cur_state")
+                status = str(raw_st).lower() if isinstance(raw_st, str) else ""
+                if status in ("running", "loading", "created", "scheduling", "pending"):
+                    self.client.destroy_instance(inst.get("id"))
+        except Exception:
+            pass
+
+        # 3. Search offers and rent fresh GPU
         logger.info("Searching Vast.ai spot offers matching criteria...")
         offers = self.client.search_offers(self.config.host_criteria)
         if not offers:
@@ -159,7 +250,6 @@ class InstanceManager:
             best_offer.get("dph_total") or best_offer.get("min_bid")
         )
 
-        # Generate zero-trust ephemeral API token
         ephemeral_token = secrets.token_urlsafe(32)
 
         env_vars = {
@@ -175,7 +265,6 @@ class InstanceManager:
         logger.info("Launching container image %s on offer %s...", self.config.docker_image, offer_id)
         if self.config.host_criteria.spot_instances:
             min_bid = float(best_offer.get("min_bid") or best_offer.get("dph_total") or 0.15)
-            # Apply competitive bid buffer to secure spot instances against immediate outbidding
             bid_price = round(min_bid * (1.0 + self.config.host_criteria.bid_buffer_ratio), 4)
             logger.info("Bidding $%.4f/hr on spot instance (min_bid: $%.4f/hr)", bid_price, min_bid)
         else:
@@ -194,14 +283,23 @@ class InstanceManager:
         with self._lock:
             self.instance_id = instance_id
 
-        # Poll until instance is running, port resolved, and server responds
+        endpoint, ephemeral_token = self._await_instance_ready(instance_id, ephemeral_token, timeout)
+        _save_persisted_state(instance_id, ephemeral_token)
+        return endpoint, ephemeral_token
+
+    def _await_instance_ready(
+        self,
+        instance_id: int,
+        token: str,
+        timeout: float
+    ) -> Tuple[Tuple[str, int], str]:
+        """Poll until instance is running, dynamic port is mapped, and health check passes."""
         start_poll = time.time()
         last_progress_log = time.time()
         stopped_since: Optional[float] = None
         logger.info("Awaiting container boot and dynamic port mapping for instance %s...", instance_id)
 
         while time.time() - start_poll < timeout:
-            # Check for terminal status from Vast API
             inst = self.client.get_instance(instance_id)
             if inst and isinstance(inst, dict):
                 raw_status = inst.get("actual_status") or inst.get("cur_state")
@@ -211,19 +309,16 @@ class InstanceManager:
                 raw_intended = inst.get("intended_status")
                 intended_status = str(raw_intended).lower() if isinstance(raw_intended, str) else ""
 
-                # 1. Definite outbid preemption
                 if "outbid" in status_msg or status == "outbid":
                     raise VastClientError(
                         f"Instance {instance_id} was outbid on the marketplace ({raw_msg or status})."
                     )
 
-                # 2. Host unloaded or explicitly terminated
                 if status == "unloaded" or (intended_status == "stopped" and time.time() - start_poll > 30):
                     raise VastClientError(
                         f"Instance {instance_id} was terminated or unloaded by host ({raw_msg or status})."
                     )
 
-                # 3. Track prolonged stopped / offline state (normal transient boot states, fatal only if stuck > 60s)
                 if status in ("stopped", "offline"):
                     if stopped_since is None:
                         stopped_since = time.time()
@@ -240,9 +335,9 @@ class InstanceManager:
             )
             if endpoint:
                 host_ip, host_port = endpoint
-                if self._check_health(host_ip, host_port, ephemeral_token):
+                if self._check_health(host_ip, host_port, token):
                     logger.info("Inference endpoint is live and verified healthy!")
-                    return (host_ip, host_port), ephemeral_token
+                    return (host_ip, host_port), token
 
                 if time.time() - last_progress_log >= 15:
                     elapsed = int(time.time() - start_poll)
@@ -282,19 +377,28 @@ class InstanceManager:
             return False
 
     def destroy(self):
-        """Explicitly destroy the running instance and reset state."""
+        """Clean up the active instance on idle timeout or shutdown."""
         with self._state_condition:
             if self.state in (InstanceState.STOPPED, InstanceState.DESTROYING):
                 return
             self.state = InstanceState.DESTROYING
-            inst_to_destroy = self.instance_id
+            inst_to_manage = self.instance_id
             self._state_condition.notify_all()
 
-        if inst_to_destroy:
-            try:
-                self.client.destroy_instance(inst_to_destroy)
-            except Exception as e:
-                logger.error("Error destroying instance %s: %s", inst_to_destroy, e)
+        if inst_to_manage:
+            if self.config.idle_action == "stop":
+                logger.info("Stopping Vast.ai instance %s (preserving weights on disk)...", inst_to_manage)
+                try:
+                    self.client.stop_instance(inst_to_manage)
+                except Exception as e:
+                    logger.error("Error stopping instance %s: %s", inst_to_manage, e)
+            else:
+                logger.info("Destroying Vast.ai instance %s...", inst_to_manage)
+                try:
+                    self.client.destroy_instance(inst_to_manage)
+                    _clear_persisted_state()
+                except Exception as e:
+                    logger.error("Error destroying instance %s: %s", inst_to_manage, e)
 
         with self._state_condition:
             self.state = InstanceState.STOPPED
@@ -320,6 +424,7 @@ class InstanceManager:
                         self.client.destroy_instance(inst_to_destroy)
                     except Exception:
                         pass
+                _clear_persisted_state()
 
     def _reaper_loop(self):
         """Background thread checking for idle inactivity."""

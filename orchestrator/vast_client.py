@@ -197,6 +197,26 @@ class VastClient:
 
         return None
 
+    def start_instance(self, instance_id: int) -> bool:
+        """Start an existing stopped Vast.ai instance."""
+        logger.info("Starting existing Vast.ai instance ID %s", instance_id)
+        try:
+            res = self._request("PUT", f"instances/{instance_id}/", data={"state": "running"})
+            return bool(res.get("success", True))
+        except Exception as e:
+            logger.error("Failed to start instance %s: %s", instance_id, e)
+            return False
+
+    def stop_instance(self, instance_id: int) -> bool:
+        """Stop an instance without destroying container disk storage."""
+        logger.info("Stopping Vast.ai instance ID %s", instance_id)
+        try:
+            res = self._request("PUT", f"instances/{instance_id}/", data={"state": "stopped"})
+            return bool(res.get("success", True))
+        except Exception as e:
+            logger.error("Failed to stop instance %s: %s", instance_id, e)
+            return False
+
     def destroy_instance(self, instance_id: int) -> bool:
         """Thoroughly destroy an instance to prevent lingering costs."""
         logger.info("Destroying Vast.ai instance ID %s", instance_id)

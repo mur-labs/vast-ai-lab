@@ -42,42 +42,46 @@ else
 fi
 
 # 4. Download model weights
-echo "Downloading model weights..."
-echo "  Source URL: ${MODEL_URL}"
-echo "  Destination: ${MODEL_FILE}"
-
-DOWNLOAD_HEADER=()
-if [ -n "${HF_TOKEN:-}" ]; then
-    DOWNLOAD_HEADER=(-H "Authorization: Bearer ${HF_TOKEN}")
-fi
-
-if command -v aria2c >/dev/null 2>&1; then
-    echo "Using aria2c for fast multi-connection download..."
-    ARIA2_HEADER_ARG=()
-    if [ -n "${HF_TOKEN:-}" ]; then
-        ARIA2_HEADER_ARG=(--header="Authorization: Bearer ${HF_TOKEN}")
-    fi
-    aria2c -x 16 -s 16 -k 1M --continue=true \
-        "${ARIA2_HEADER_ARG[@]}" \
-        --dir="$MODEL_DIR" \
-        --out="$(basename "$MODEL_FILE")" \
-        "$MODEL_URL"
-elif command -v curl >/dev/null 2>&1; then
-    echo "Using curl for download..."
-    curl -fSL --retry 3 --retry-delay 2 \
-        "${DOWNLOAD_HEADER[@]}" \
-        -o "$MODEL_FILE" \
-        "$MODEL_URL"
-elif command -v wget >/dev/null 2>&1; then
-    echo "Using wget for download..."
-    WGET_HEADER_ARG=()
-    if [ -n "${HF_TOKEN:-}" ]; then
-        WGET_HEADER_ARG=(--header="Authorization: Bearer ${HF_TOKEN}")
-    fi
-    wget -c "${WGET_HEADER_ARG[@]}" -O "$MODEL_FILE" "$MODEL_URL"
+if [ -s "$MODEL_FILE" ]; then
+    echo "Existing model weights detected at ${MODEL_FILE}. Skipping download!"
 else
-    echo "ERROR: Neither aria2c, curl, nor wget is available for downloading." >&2
-    exit 1
+    echo "Downloading model weights..."
+    echo "  Source URL: ${MODEL_URL}"
+    echo "  Destination: ${MODEL_FILE}"
+
+    DOWNLOAD_HEADER=()
+    if [ -n "${HF_TOKEN:-}" ]; then
+        DOWNLOAD_HEADER=(-H "Authorization: Bearer ${HF_TOKEN}")
+    fi
+
+    if command -v aria2c >/dev/null 2>&1; then
+        echo "Using aria2c for fast multi-connection download..."
+        ARIA2_HEADER_ARG=()
+        if [ -n "${HF_TOKEN:-}" ]; then
+            ARIA2_HEADER_ARG=(--header="Authorization: Bearer ${HF_TOKEN}")
+        fi
+        aria2c -x 16 -s 16 -k 1M --continue=true \
+            "${ARIA2_HEADER_ARG[@]}" \
+            --dir="$MODEL_DIR" \
+            --out="$(basename "$MODEL_FILE")" \
+            "$MODEL_URL"
+    elif command -v curl >/dev/null 2>&1; then
+        echo "Using curl for download..."
+        curl -fSL --retry 3 --retry-delay 2 \
+            "${DOWNLOAD_HEADER[@]}" \
+            -o "$MODEL_FILE" \
+            "$MODEL_URL"
+    elif command -v wget >/dev/null 2>&1; then
+        echo "Using wget for download..."
+        WGET_HEADER_ARG=()
+        if [ -n "${HF_TOKEN:-}" ]; then
+            WGET_HEADER_ARG=(--header="Authorization: Bearer ${HF_TOKEN}")
+        fi
+        wget -c "${WGET_HEADER_ARG[@]}" -O "$MODEL_FILE" "$MODEL_URL"
+    else
+        echo "ERROR: Neither aria2c, curl, nor wget is available for downloading." >&2
+        exit 1
+    fi
 fi
 
 if [ ! -s "$MODEL_FILE" ]; then
