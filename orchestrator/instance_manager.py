@@ -147,12 +147,14 @@ class InstanceManager:
             env_vars["HF_TOKEN"] = self.config.active_model.hf_token
 
         logger.info("Launching container image %s on offer %s...", self.config.docker_image, offer_id)
+        bid_price = best_offer.get("min_bid") or best_offer.get("dph_total")
         instance_id = self.client.launch_instance(
             offer_id=offer_id,
             image=self.config.docker_image,
             disk_gb=self.config.host_criteria.min_disk_gb,
             env=env_vars,
             container_port=self.config.container_port,
+            bid_price=bid_price,
         )
 
         with self._lock:

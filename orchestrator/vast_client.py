@@ -74,19 +74,26 @@ class VastClient:
         - Reliability >= min_reliability
         - Spot/interruptible offers prioritized for lowest task cost
         """
-        query_payload = {
+        query_payload: Dict[str, Any] = {
             "rentable": {"eq": True},
+            "rented": {"eq": False},
             "verified": {"eq": True},
             "gpu_ram": {"gte": int(criteria.min_vram_gb * 1024)},
             "disk_space": {"gte": float(criteria.min_disk_gb)},
             "inet_down": {"gte": float(criteria.min_inet_down_mbps)},
             "reliability2": {"gte": float(criteria.min_reliability)},
+            "type": "bid" if criteria.spot_instances else "on-demand",
         }
-        if criteria.spot_instances:
-            query_payload["type"] = {"eq": "bid"}
 
         res = self._request("POST", "bundles/", data=query_payload)
         offers = res.get("offers", []) if isinstance(res, dict) else []
+
+        # If no spot/bid offers match, fallback to on-demand
+        if not offers and criteria.spot_instances:
+            logger.info("No spot/bid offers found. Trying on-demand offers...")
+            query_payload["type"] = "on-demand"
+            res = self._request("POST", "bundles/", data=query_payload)
+            offers = res.get("offers", []) if isinstance(res, dict) else []
 
         # Sort offers prioritizing lowest total cost per hour (dph_total or dph_base)
         def cost_key(offer: Dict[str, Any]) -> float:
