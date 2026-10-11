@@ -3,15 +3,10 @@ name: Build and Publish Custom llama.cpp Image
 on:
   push:
     branches: [ "main", "master" ]
-    paths:
-      - "Dockerfile"
-      - "entrypoint.sh"
-      - ".github/workflows/docker-build-push.yml"
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/rental-llm
 
 jobs:
   build-and-push:
@@ -23,6 +18,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set lower-case image name
+        run: |
+          echo "IMAGE_NAME=$(echo '${{ github.repository_owner }}/rental-llm' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3

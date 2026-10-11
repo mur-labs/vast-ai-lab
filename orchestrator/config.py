@@ -35,7 +35,7 @@ class OrchestratorConfig:
     poll_interval_seconds: int = 5
     boot_timeout_seconds: int = 600
     container_port: int = 8000
-    docker_image: str = os.getenv("RENTAL_DOCKER_IMAGE", "rental-llm/llama-server:latest")
+    docker_image: str = os.getenv("RENTAL_DOCKER_IMAGE", "ghcr.io/mur-labs/rental-llm:latest")
     vast_api_key: Optional[str] = field(default_factory=lambda: os.getenv("VAST_API_KEY"))
     host_criteria: HostCriteria = field(default_factory=HostCriteria)
     active_model: ModelConfig = field(default_factory=ModelConfig)
