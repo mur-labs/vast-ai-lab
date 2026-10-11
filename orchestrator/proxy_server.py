@@ -104,6 +104,8 @@ class ProxyHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             logger.debug("Client disconnected before response could be sent")
         except Exception as e:
             logger.error("Error proxying request to %s: %s", target_url, e)
+            if isinstance(e, urllib.error.URLError) or "refused" in str(e).lower() or "reset" in str(e).lower():
+                self.manager.mark_failed()
             try:
                 self.send_response(502)
                 self.send_header("Content-Type", "application/json")

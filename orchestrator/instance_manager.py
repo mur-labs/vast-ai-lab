@@ -67,8 +67,20 @@ class InstanceManager:
         with self._state_condition:
             while True:
                 if self.state == InstanceState.READY and self.endpoint and self.api_token:
-                    self.touch()
-                    return self.endpoint, self.api_token
+                    host_ip, host_port = self.endpoint
+                    if self._check_health(host_ip, host_port, self.api_token):
+                        self.touch()
+                        return self.endpoint, self.api_token
+                    logger.warning("Existing READY instance %s:%s is no longer healthy/responding. Re-provisioning...", host_ip, host_port)
+                    self.state = InstanceState.STOPPED
+                    self.endpoint = None
+                    self.api_token = None
+                    if self.instance_id:
+                        try:
+                            self.client.destroy_instance(self.instance_id)
+                        except Exception:
+                            pass
+                        self.instance_id = None
 
                 if self.state == InstanceState.STOPPED:
                     # Claim the provisioning lock
@@ -291,6 +303,23 @@ class InstanceManager:
             self.api_token = None
             self.last_active_time = 0.0
             self._state_condition.notify_all()
+
+    def mark_failed(self):
+        """Mark current instance as stopped/failed so subsequent requests re-provision."""
+        with self._state_condition:
+            if self.state in (InstanceState.READY, InstanceState.PROVISIONING):
+                logger.warning("Marking instance as failed and triggering re-provision.")
+                inst_to_destroy = self.instance_id
+                self.state = InstanceState.STOPPED
+                self.instance_id = None
+                self.endpoint = None
+                self.api_token = None
+                self._state_condition.notify_all()
+                if inst_to_destroy:
+                    try:
+                        self.client.destroy_instance(inst_to_destroy)
+                    except Exception:
+                        pass
 
     def _reaper_loop(self):
         """Background thread checking for idle inactivity."""
