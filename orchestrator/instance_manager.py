@@ -118,6 +118,20 @@ class InstanceManager:
 
     def _provision_instance(self, timeout: float) -> Tuple[Tuple[str, int], str]:
         """Execute offer search, launch, polling, and port resolution."""
+        # Safeguard: Clean up any lingering active instances from aborted sessions
+        try:
+            for inst in self.client.list_instances():
+                status = inst.get("actual_status") or inst.get("cur_state")
+                if status in ("running", "loading", "created", "scheduling", "pending"):
+                    logger.warning(
+                        "Found lingering instance ID %s (status: %s). Cleaning up to prevent duplicate billing.",
+                        inst.get("id"),
+                        status
+                    )
+                    self.client.destroy_instance(inst.get("id"))
+        except Exception as check_err:
+            logger.debug("Existing instances pre-check: %s", check_err)
+
         logger.info("Searching Vast.ai spot offers matching criteria...")
         offers = self.client.search_offers(self.config.host_criteria)
         if not offers:

@@ -29,10 +29,14 @@ class VastClient:
         params: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Perform an HTTP request against the Vast.ai REST API."""
-        if not self.api_key:
-            raise VastClientError("VAST_API_KEY is not configured.")
+        if endpoint.startswith("http://") or endpoint.startswith("https://"):
+            url = endpoint
+        elif endpoint.startswith("/api/"):
+            parsed = urllib.parse.urlparse(self.base_url)
+            url = f"{parsed.scheme}://{parsed.netloc}{endpoint}"
+        else:
+            url = f"{self.base_url}/{endpoint.lstrip('/')}"
 
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
         query_params = dict(params or {})
         # Vast.ai supports api_key parameter or Authorization header
         query_params["api_key"] = self.api_key
@@ -145,8 +149,8 @@ class VastClient:
         return int(new_contract)
 
     def list_instances(self) -> List[Dict[str, Any]]:
-        """List all active and pending instances for account."""
-        res = self._request("GET", "instances/")
+        """List all active and pending instances for account using API v1."""
+        res = self._request("GET", "/api/v1/instances/")
         if isinstance(res, dict) and "instances" in res:
             return res["instances"]
         if isinstance(res, list):
@@ -196,5 +200,9 @@ class VastClient:
     def destroy_instance(self, instance_id: int) -> bool:
         """Thoroughly destroy an instance to prevent lingering costs."""
         logger.info("Destroying Vast.ai instance ID %s", instance_id)
-        res = self._request("DELETE", f"instances/{instance_id}/")
-        return bool(res.get("success", True))
+        try:
+            res = self._request("DELETE", f"/api/v1/instances/{instance_id}/")
+            return bool(res.get("success", True))
+        except VastClientError:
+            res = self._request("DELETE", f"instances/{instance_id}/")
+            return bool(res.get("success", True))
