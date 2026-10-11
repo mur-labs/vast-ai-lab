@@ -171,20 +171,31 @@ class InstanceManager:
         # 1. Check if an instance with our image or saved ID already exists on account
         reusable_inst = None
         try:
-            for inst in self.client.list_instances():
+            instances = self.client.list_instances()
+            logger.info("Found %d existing instance(s) on Vast account.", len(instances))
+            for inst in instances:
                 inst_id = inst.get("id")
-                img = str(inst.get("image", "")).lower()
+                inst_dump = json.dumps(inst).lower()
                 raw_status = inst.get("actual_status") or inst.get("cur_state")
                 status = str(raw_status).lower() if isinstance(raw_status, str) else ""
                 raw_msg = inst.get("status_msg")
                 status_msg = str(raw_msg).lower() if isinstance(raw_msg, str) else ""
 
-                # Match by image name or saved instance ID, ensuring not permanently outbid
-                is_our_image = ("rental-llm" in img) or (self.config.docker_image.lower() in img)
-                is_saved = (saved_id is not None and inst_id == saved_id)
+                logger.info(
+                    "Inspecting instance ID %s: status=%s, status_msg=%s",
+                    inst_id,
+                    status,
+                    raw_msg
+                )
 
-                if (is_our_image or is_saved) and "outbid" not in status_msg and status != "outbid":
+                # Match by image name, saved instance ID, or sole instance on account
+                is_our_image = ("rental-llm" in inst_dump) or (self.config.docker_image.lower() in inst_dump)
+                is_saved = (saved_id is not None and inst_id == saved_id)
+                is_only = (len(instances) == 1)
+
+                if (is_our_image or is_saved or is_only) and "outbid" not in status_msg and status != "outbid":
                     reusable_inst = inst
+                    logger.info("Selected instance ID %s for reuse!", inst_id)
                     break
         except Exception as check_err:
             logger.debug("Failed listing instances during reuse check: %s", check_err)
@@ -193,9 +204,10 @@ class InstanceManager:
             inst_id = int(reusable_inst["id"])
             raw_status = reusable_inst.get("actual_status") or reusable_inst.get("cur_state")
             status = str(raw_status).lower() if isinstance(raw_status, str) else ""
-            logger.info("Found existing instance ID %s on Vast.ai (status: %s).", inst_id, status)
+            logger.info("Reusing existing instance ID %s on Vast.ai (current status: %s).", inst_id, status)
 
-            token = saved_token or secrets.token_urlsafe(32)
+            env_dict = reusable_inst.get("env") if isinstance(reusable_inst.get("env"), dict) else {}
+            token = saved_token or env_dict.get("API_TOKEN") or secrets.token_urlsafe(32)
 
             # If stopped or exited, start it up to preserve downloaded weights
             if status in ("stopped", "exited", "offline"):
