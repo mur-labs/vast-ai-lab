@@ -115,14 +115,16 @@ class VastClient:
         """
         Rent an offer and start a container. Returns the new instance ID.
         """
+        env_copy = dict(env)
+        # Port mapping in Vast.ai API is passed via env dictionary or Dockerfile EXPOSE
+        env_copy[f"-p {container_port}:{container_port}"] = "1"
+
         payload: Dict[str, Any] = {
             "client_id": "me",
             "image": image,
             "disk": float(disk_gb),
-            "env": env,
+            "env": env_copy,
             "runtype": "args",
-            # Ensure the container internal port is forwarded
-            "extra": f"-p {container_port}:{container_port}",
         }
         if bid_price is not None:
             payload["price"] = float(bid_price)
@@ -130,10 +132,12 @@ class VastClient:
             payload["onstart"] = onstart
 
         res = self._request("PUT", f"asks/{offer_id}/", data=payload)
-        if not res.get("success"):
+        new_contract = res.get("new_contract")
+
+        # If Vast returned new_contract, the instance contract was created!
+        if not new_contract and not res.get("success"):
             raise VastClientError(f"Failed to launch instance on offer {offer_id}: {res}")
 
-        new_contract = res.get("new_contract")
         if not new_contract:
             raise VastClientError(f"No new_contract ID returned by Vast.ai: {res}")
 

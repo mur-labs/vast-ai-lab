@@ -77,6 +77,26 @@ class TestVastClient(unittest.TestCase):
         self.assertEqual(instance_id, 556677)
 
     @patch("orchestrator.vast_client.urllib.request.urlopen")
+    def test_launch_instance_with_success_false_and_new_contract(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            "success": False,
+            "new_contract": 55420477,
+            "instance_api_key": "some_key"
+        }).encode("utf-8")
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        instance_id = self.client.launch_instance(
+            offer_id=36757236,
+            image="ghcr.io/mur-labs/rental-llm:latest",
+            disk_gb=40,
+            env={"MODEL_URL": "http://model", "API_TOKEN": "tok123"},
+            container_port=8000
+        )
+
+        self.assertEqual(instance_id, 55420477)
+
+    @patch("orchestrator.vast_client.urllib.request.urlopen")
     def test_resolve_dynamic_endpoint(self, mock_urlopen):
         mock_response = MagicMock()
         mock_response.read.return_value = json.dumps({
