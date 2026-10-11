@@ -41,9 +41,10 @@ class ProxyHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             logger.error("Failed to ensure instance readiness: %s", e)
             self.send_response(503)
             self.send_header("Content-Type", "application/json")
+            err_bytes = f'{{"error": {{"message": "Failed to provision GPU instance: {str(e)}", "type": "orchestrator_error"}}}}'.encode("utf-8")
+            self.send_header("Content-Length", str(len(err_bytes)))
             self.end_headers()
-            err_payload = f'{{"error": {{"message": "Failed to provision GPU instance: {str(e)}", "type": "orchestrator_error"}}}}'
-            self.wfile.write(err_payload.encode("utf-8"))
+            self.wfile.write(err_bytes)
             return
 
         # 4. Construct remote URL
@@ -92,7 +93,7 @@ class ProxyHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 err_data = e.read()
                 self.send_response(e.code)
                 for key, val in e.headers.items():
-                    if key.lower() not in ("transfer-encoding", "connection", "keep-alive"):
+                    if key.lower() not in ("transfer-encoding", "connection", "keep-alive", "content-length"):
                         self.send_header(key, val)
                 self.send_header("Content-Length", str(len(err_data)))
                 self.end_headers()
@@ -109,9 +110,10 @@ class ProxyHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             try:
                 self.send_response(502)
                 self.send_header("Content-Type", "application/json")
+                err_bytes = f'{{"error": {{"message": "Proxy communication error: {str(e)}", "type": "bad_gateway"}}}}'.encode("utf-8")
+                self.send_header("Content-Length", str(len(err_bytes)))
                 self.end_headers()
-                err_payload = f'{{"error": {{"message": "Proxy communication error: {str(e)}", "type": "bad_gateway"}}}}'
-                self.wfile.write(err_payload.encode("utf-8"))
+                self.wfile.write(err_bytes)
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
