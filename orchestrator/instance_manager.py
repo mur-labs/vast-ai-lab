@@ -327,9 +327,9 @@ class InstanceManager:
                         f"Instance {instance_id} was outbid on the marketplace ({raw_msg or status})."
                     )
 
-                if status == "unloaded" or (intended_status == "stopped" and time.time() - start_poll > 30):
+                if status == "unloaded" or (intended_status == "stopped" and status in ("stopped", "offline") and time.time() - start_poll > 30):
                     raise VastClientError(
-                        f"Instance {instance_id} was terminated or unloaded by host ({raw_msg or status})."
+                        f"Instance {instance_id} was terminated or unloaded by host (status: {raw_status}, msg: {raw_msg})."
                     )
 
                 if status in ("stopped", "offline"):
@@ -344,7 +344,8 @@ class InstanceManager:
 
             endpoint = self.client.resolve_dynamic_endpoint(
                 instance_id=instance_id,
-                container_port=self.config.container_port
+                container_port=self.config.container_port,
+                instance_data=inst
             )
             if endpoint:
                 host_ip, host_port = endpoint

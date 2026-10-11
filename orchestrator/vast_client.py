@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import time
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,7 +20,7 @@ class VastClient:
     """REST API Client for Vast.ai GPU Marketplace (API v0)."""
 
     def __init__(self, api_key: Optional[str] = None, base_url: str = "https://console.vast.ai/api/v0"):
-        self.api_key = api_key
+        self.api_key = api_key or os.getenv("VAST_API_KEY")
         self.base_url = base_url.rstrip("/")
 
     def _request(
@@ -55,19 +57,26 @@ class VastClient:
 
         req = urllib.request.Request(url, data=body_bytes, headers=headers, method=method)
 
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                resp_bytes = resp.read()
-                if not resp_bytes:
-                    return {}
-                return json.loads(resp_bytes.decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            err_msg = e.read().decode("utf-8", errors="replace")
-            logger.error("Vast API error %s on %s: %s", e.code, endpoint, err_msg)
-            raise VastClientError(f"Vast API HTTP {e.code} error: {err_msg}") from e
-        except Exception as e:
-            logger.error("Failed request to %s: %s", endpoint, e)
-            raise VastClientError(f"Network error connecting to Vast API: {e}") from e
+        max_attempts = 4
+        for attempt in range(max_attempts):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    resp_bytes = resp.read()
+                    if not resp_bytes:
+                        return {}
+                    return json.loads(resp_bytes.decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                err_msg = e.read().decode("utf-8", errors="replace")
+                if e.code == 429 and attempt < max_attempts - 1:
+                    wait_sec = 2.0 * (attempt + 1)
+                    logger.warning("Vast API rate limited (429) on %s. Retrying in %.1fs...", endpoint, wait_sec)
+                    time.sleep(wait_sec)
+                    continue
+                logger.error("Vast API error %s on %s: %s", e.code, endpoint, err_msg)
+                raise VastClientError(f"Vast API HTTP {e.code} error: {err_msg}") from e
+            except Exception as e:
+                logger.error("Failed request to %s: %s", endpoint, e)
+                raise VastClientError(f"Network error connecting to Vast API: {e}") from e
 
     def search_offers(self, criteria: HostCriteria) -> List[Dict[str, Any]]:
         """
@@ -168,13 +177,14 @@ class VastClient:
     def resolve_dynamic_endpoint(
         self,
         instance_id: int,
-        container_port: int = 8000
+        container_port: int = 8000,
+        instance_data: Optional[Dict[str, Any]] = None
     ) -> Optional[Tuple[str, int]]:
         """
         Resolve the external dynamic port mapping for an internal container port.
         Returns (host_ip, host_port) when mapped, or None if still pending.
         """
-        inst = self.get_instance(instance_id)
+        inst = instance_data if instance_data is not None else self.get_instance(instance_id)
         if not inst:
             return None
 
