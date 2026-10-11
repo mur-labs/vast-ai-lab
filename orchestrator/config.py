@@ -11,6 +11,7 @@ class HostCriteria:
     min_inet_down_mbps: float = 500.0
     min_reliability: float = 0.97
     spot_instances: bool = True
+    bid_buffer_ratio: float = 0.10  # 10% bid buffer above min_bid to prevent preemption
 
 
 @dataclass

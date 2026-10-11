@@ -161,7 +161,11 @@ class InstanceManager:
             env_vars["HF_TOKEN"] = self.config.active_model.hf_token
 
         logger.info("Launching container image %s on offer %s...", self.config.docker_image, offer_id)
-        bid_price = best_offer.get("min_bid") or best_offer.get("dph_total")
+        min_bid = float(best_offer.get("min_bid") or best_offer.get("dph_total") or 0.15)
+        # Apply competitive bid buffer to secure spot instances against immediate outbidding
+        bid_price = round(min_bid * (1.0 + self.config.host_criteria.bid_buffer_ratio), 4)
+        logger.info("Bidding $%.4f/hr on spot instance (min_bid: $%.4f/hr)", bid_price, min_bid)
+
         instance_id = self.client.launch_instance(
             offer_id=offer_id,
             image=self.config.docker_image,
@@ -179,6 +183,16 @@ class InstanceManager:
         logger.info("Awaiting container boot and dynamic port mapping for instance %s...", instance_id)
 
         while time.time() - start_poll < timeout:
+            # Check for terminal status (e.g. outbid by another user)
+            inst = self.client.get_instance(instance_id)
+            if inst:
+                status = inst.get("actual_status") or inst.get("cur_state")
+                if status in ("stopped", "offline", "exited", "outbid"):
+                    raise VastClientError(
+                        f"Instance {instance_id} was preempted/stopped (status: {status}). "
+                        f"Outbid by another user on the marketplace."
+                    )
+
             endpoint = self.client.resolve_dynamic_endpoint(
                 instance_id=instance_id,
                 container_port=self.config.container_port

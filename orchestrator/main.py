@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--idle-timeout", type=int, default=600, help="Idle timeout in seconds before destruction (default: 600)")
     parser.add_argument("--image", type=str, default=os.getenv("RENTAL_DOCKER_IMAGE", "ghcr.io/mur-labs/rental-llm:latest"), help="Docker image name")
     parser.add_argument("--model-url", type=str, default=None, help="Direct GGUF model download URL")
+    parser.add_argument("--mode", choices=["spot", "on-demand"], default="spot", help="Rental mode: spot (default, cheaper) or on-demand (guaranteed uninterrupted)")
 
     args = parser.parse_args()
 
@@ -42,6 +43,9 @@ def main():
         idle_timeout_seconds=args.idle_timeout,
         docker_image=args.image,
     )
+
+    if args.mode == "on-demand":
+        config.host_criteria.spot_instances = False
 
     if args.model_url:
         config.active_model.model_url = args.model_url
