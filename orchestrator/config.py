@@ -28,7 +28,7 @@ class ModelConfig:
             "https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf"
         )
     )
-    context_size: int = 4096
+    context_size: int = field(default_factory=lambda: int(os.getenv("CTX_SIZE", "16384")))
     gpu_layers: int = 99
     hf_token: Optional[str] = field(default_factory=lambda: os.getenv("HF_TOKEN"))
 
