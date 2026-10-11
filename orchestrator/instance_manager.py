@@ -1,6 +1,7 @@
 import enum
 import json
 import logging
+import os
 import secrets
 import threading
 import time
@@ -207,7 +208,7 @@ class InstanceManager:
             logger.info("Reusing existing instance ID %s on Vast.ai (current status: %s).", inst_id, status)
 
             env_dict = reusable_inst.get("env") if isinstance(reusable_inst.get("env"), dict) else {}
-            token = saved_token or env_dict.get("API_TOKEN") or secrets.token_urlsafe(32)
+            token = os.getenv("RENTAL_API_TOKEN") or saved_token or env_dict.get("API_TOKEN") or secrets.token_urlsafe(32)
 
             # If stopped or exited, start it up to preserve downloaded weights
             if status in ("stopped", "exited", "offline"):
@@ -262,7 +263,7 @@ class InstanceManager:
             best_offer.get("dph_total") or best_offer.get("min_bid")
         )
 
-        ephemeral_token = secrets.token_urlsafe(32)
+        ephemeral_token = os.getenv("RENTAL_API_TOKEN") or secrets.token_urlsafe(32)
 
         env_vars = {
             "MODEL_URL": self.config.active_model.model_url,
@@ -347,7 +348,10 @@ class InstanceManager:
             )
             if endpoint:
                 host_ip, host_port = endpoint
-                if self._check_health(host_ip, host_port, token):
+                health = self._check_health(host_ip, host_port, token)
+                if health == "AUTH_FAILED":
+                    raise VastClientError(f"Instance {instance_id} rejected API token with HTTP 401 Unauthorized.")
+                if health is True:
                     logger.info("Inference endpoint is live and verified healthy!")
                     return (host_ip, host_port), token
 
@@ -374,17 +378,39 @@ class InstanceManager:
 
         raise TimeoutError(f"Instance {instance_id} failed to become healthy within {timeout} seconds.")
 
-    def _check_health(self, host_ip: str, host_port: int, token: str) -> bool:
-        """Pings the llama.cpp server /health endpoint with the ephemeral bearer token."""
-        url = f"http://{host_ip}:{host_port}/health"
-        req = urllib.request.Request(
-            url,
+    def _check_health(self, host_ip: str, host_port: int, token: str) -> Any:
+        """
+        Validates server readiness via /health and verifies API token on /v1/models.
+        Returns:
+            True: if server is ready and token is authenticated
+            "AUTH_FAILED": if token failed authentication (HTTP 401)
+            False: if server is still loading or not reachable
+        """
+        # 1. Check basic server liveness
+        health_url = f"http://{host_ip}:{host_port}/health"
+        req = urllib.request.Request(health_url, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status not in (200, 204):
+                    return False
+        except Exception:
+            return False
+
+        # 2. Verify token authentication on /v1/models
+        models_url = f"http://{host_ip}:{host_port}/v1/models"
+        req_auth = urllib.request.Request(
+            models_url,
             headers={"Authorization": f"Bearer {token}"},
             method="GET"
         )
         try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urllib.request.urlopen(req_auth, timeout=5) as resp:
                 return resp.status in (200, 204)
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                logger.error("Token verification failed (HTTP 401): API token does not match instance.")
+                return "AUTH_FAILED"
+            return False
         except Exception:
             return False
 

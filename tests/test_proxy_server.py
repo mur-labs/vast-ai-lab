@@ -22,6 +22,11 @@ class MockLlamaServerHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"OK")
+        elif self.path == "/v1/models":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"object":"list","data":[{"id":"qwen2.5-14b-instruct"}]}')
         else:
             self.send_response(404)
             self.end_headers()
