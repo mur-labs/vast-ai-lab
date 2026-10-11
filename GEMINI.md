@@ -24,6 +24,6 @@ Build a personal, on-demand AI inference infrastructure for academic research us
     *   `orchestrator/instance_manager.py`: Ephemeral token injection, state machine with retry deduplication, and 10-minute idle reaper.
     *   `orchestrator/proxy_server.py`: Local reverse proxy for LiteLLM with on-demand lazy provisioning.
     *   Full test suite in `tests/` passes (15 tests).
-*   **Phase 3 — Image Delivery & End-to-End Integration:** [READY]
-    *   Push custom container image to Docker Hub / GHCR registry.
-    *   Connect LiteLLM route (`ai-router`) to the Orchestrator endpoint (`http://127.0.0.1:8088`).
+*   **Phase 3 — Image Delivery & End-to-End Integration:** [COMPLETE]
+    *   GitHub Actions cloud build pipeline configured in `.github/workflows/docker-build-push.yml` for automated GHCR image delivery without local Docker.
+    *   LiteLLM route `vast-qwen` added to `/home/carol/ai-router/config.yaml` pointing to Orchestrator proxy (`http://127.0.0.1:8088/v1`).
